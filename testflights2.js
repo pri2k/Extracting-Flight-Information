@@ -33,20 +33,10 @@ async function appendFlights(auth, flights, route, date) {
   const sheets = google.sheets({ version: "v4", auth });
 
   const values = flights.map(({ airline, departure, arrival, price, stopType, bookingUrl }) => [
-    route.from,      // departure_airport
-    route.to,        // arrival_airport
-    departure,       // departure_time
-    arrival,         // arrival_time
-    airline,         // airline
-    price,           // price
-    stopType,        // new column: stop type
-    date,            // new column: date
-    bookingUrl       // new column: booking URL
+    route.from, route.to, departure, arrival, airline, price, stopType, date, bookingUrl
   ]);
 
-  const resource = {
-    values,
-  };
+  const resource = { values };
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
@@ -60,74 +50,86 @@ const searchFlight = async (browser, from, to, date, auth) => {
   const page = await browser.newPage();
   try {
     console.log(`\n=== Scraping: ${from} -> ${to} on ${date} ===`);
-
     const searchUrl = `https://www.google.com/travel/flights?q=Flights%20from%20${from}%20to%20${to}%20on%20${date}`;
     await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
-
     await page.waitForSelector("div[role='main']", { timeout: 30000 });
-    await delay(10000); // Let page fully render
+    await delay(10000); // Wait for content load
 
-    const tabs = ['Best', 'Cheapest'];
-    let allResults = [];
-
-    for (const tab of tabs) {
-      // Click on the tab
-      const tabSelector = `button[aria-label='${tab}']`;
-      await page.waitForSelector(tabSelector, { timeout: 10000 });
-      await page.click(tabSelector);
-      await delay(5000); // Wait for the tab content to load
-
-      const results = await page.evaluate((searchUrl) => {
-        const cards = document.querySelectorAll("div[role='main'] .pIav2d") || [];
-        const flights = [];
-
-        cards.forEach((card, index) => {
-          const airline = card.querySelector(".sSHqwe.tPgKwe.ogfYpf")?.innerText || "";
-          const departureFull = card.querySelector(".mv1WYe span:nth-child(1)")?.innerText || "";
-          const arrivalFull = card.querySelector(".mv1WYe span:nth-child(2)")?.innerText || "";
-          const price = card.querySelector(".YMlIz.FpEdX")?.innerText || "";
-
-          let stopType = "";
-          const stopElem = card.querySelector(".J0lOec");
-          if (stopElem) {
-            stopType = stopElem.innerText.trim();
+    // ✅ Try to toggle round-trip to one-way
+    try {
+      const oneWayToggleXpath = "//div[@role='tablist']//div[contains(text(),'Round trip') or contains(text(),'One-way')]";
+      const [toggleButton] = await page.$x(oneWayToggleXpath);
+      if (toggleButton) {
+        const buttonText = await page.evaluate(el => el.innerText, toggleButton);
+        if (buttonText.includes("Round trip")) {
+          await toggleButton.click();
+          await delay(1000);
+          const [oneWayOption] = await page.$x("//div[@role='menu']//div[contains(text(),'One-way')]");
+          if (oneWayOption) {
+            await oneWayOption.click();
+            await delay(5000); // Wait for page to reload after toggle
+            console.log("✅ Switched to One-way trip");
           } else {
-            const text = card.innerText;
-            const match = text.match(/(Nonstop|\d+\sstop[s]?)/i);
-            if (match) stopType = match[0];
+            console.log("⚠️ One-way option not found in menu.");
           }
-
-          const timeRegex = /([0-9]{1,2}:[0-9]{2}\s?[APMapm]{2})/;
-          const departureMatch = departureFull.match(timeRegex);
-          const arrivalMatch = arrivalFull.match(timeRegex);
-          const departure = departureMatch ? departureMatch[1] : "";
-          const arrival = arrivalMatch ? arrivalMatch[1] : "";
-
-          if (airline && departure && arrival && price) {
-            flights.push({
-              airline,
-              departure,
-              arrival,
-              price,
-              stopType,
-              bookingUrl: searchUrl
-            });
-          }
-        });
-
-        return flights;
-      }, searchUrl);
-
-      allResults = allResults.concat(results);
+        } else {
+          console.log("One-way already selected.");
+        }
+      } else {
+        console.log("⚠️ Could not find trip type toggle button.");
+      }
+    } catch (err) {
+      console.error("❌ Failed to switch to One-way:", err.message);
     }
 
-    console.log(`Found ${allResults.length} flights.`);
-    console.log(allResults);
+    await delay(10000); // Let flights reload fully
 
-    if (allResults.length === 0) {
-      console.log("No flights found or structure may have changed.");
-    } else {
-      await appendFlights(auth, allResults, { from, to }, date);
+    const results = await page.evaluate((searchUrl) => {
+      const cards = document.querySelectorAll("div[role='main'] .pIav2d") || [];
+      const flights = [];
+
+      cards.forEach((card) => {
+        const airline = card.querySelector(".sSHqwe.tPgKwe.ogfYpf")?.innerText || "";
+        const departureFull = card.querySelector("[aria-label*='Departure time']")?.innerText
+                           || card.querySelector(".mv1WYe span:nth-child(1)")?.innerText || "";
+        const arrivalFull = card.querySelector("[aria-label*='Arrival time']")?.innerText
+                           || card.querySelector(".mv1WYe span:nth-child(2)")?.innerText || "";
+        const price = card.querySelector(".YMlIz.FpEdX")?.innerText || "";
+
+        let stopType = "";
+        const stopElem = card.querySelector(".J0lOec");
+        if (stopElem) {
+          stopType = stopElem.innerText.trim();
+        } else {
+          const text = card.innerText;
+          const match = text.match(/(Nonstop|\d+\sstop[s]?)/i);
+          if (match) stopType = match[0];
+        }
+
+        const timeRegex = /([0-9]{1,2}:[0-9]{2}\s?[APMapm]{2})/;
+        const departureMatch = departureFull.match(timeRegex);
+        const arrivalMatch = arrivalFull.match(timeRegex);
+        const departure = departureMatch ? departureMatch[1] : "";
+        const arrival = arrivalMatch ? arrivalMatch[1] : "";
+
+        flights.push({
+          airline,
+          departureFull,
+          arrivalFull,
+          departure,
+          arrival,
+          price,
+          stopType,
+          bookingUrl: searchUrl,
+        });
+      });
+
+      return flights;
+    }, searchUrl);
+
+    console.log(`Found ${results.length} flights.`);
+    if (results.length > 0) {
+      await appendFlights(auth, results, { from, to }, date);
     }
   } catch (err) {
     console.error(`Error scraping ${from} -> ${to} on ${date}:`, err.message);
@@ -136,7 +138,6 @@ const searchFlight = async (browser, from, to, date, auth) => {
   }
 };
 
-
 function generateDates(startDate, monthsAhead) {
   const dates = [];
   const endDate = new Date(startDate);
@@ -144,7 +145,6 @@ function generateDates(startDate, monthsAhead) {
 
   let current = new Date(startDate);
   while (current <= endDate) {
-    // Format to YYYY-MM-DD
     const year = current.getFullYear();
     const month = String(current.getMonth() + 1).padStart(2, '0');
     const day = String(current.getDate()).padStart(2, '0');
@@ -155,41 +155,32 @@ function generateDates(startDate, monthsAhead) {
 }
 
 const runScraper = async () => {
-    const auth = await authorize();
+  const auth = await authorize();
 
-    const sheets = google.sheets({ version: "v4", auth });
-    await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `${SHEET_NAME}!A1`,
-        valueInputOption: "RAW",
-        resource: {
-        values: [["✅ Sheets test successful", new Date().toISOString()]],
-        },
-    });
+  const sheets = google.sheets({ version: "v4", auth });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${SHEET_NAME}!A1`,
+    valueInputOption: "RAW",
+    resource: {
+      values: [["✅ Sheets test successful", new Date().toISOString()]],
+    },
+  });
 
-    const browser = await puppeteer.launch({ headless: false });
+  const browser = await puppeteer.launch({ headless: false });
 
-    const departures = ["DEL"];
-    const arrivals = ["DXB"];
-    //  "HKT", "DPS"
-    const dates = ["2025-06-08"];
-    // const dates = generateDates(new Date("2025-06-01"), 6);
+  const departures = ["DEL"];
+  const arrivals = ["DXB"];
+  const dates = generateDates(new Date("2025-06-01"), 0); // You can increase to 6
 
-    const routes = [];
-
-    for (const from of departures) {
+  for (const from of departures) {
     for (const to of arrivals) {
-        for (const date of dates) {
-        routes.push({ from, to, date });
-        }
+      for (const date of dates) {
+        await searchFlight(browser, from, to, date, auth);
+        await delay(5000);
+      }
     }
-    }
-
-    for (const route of routes) {
-    await searchFlight(browser, route.from, route.to, route.date, auth);
-    await delay(5000);
-    }
-
+  }
 
   await browser.close();
 };

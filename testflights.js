@@ -75,7 +75,6 @@ const searchFlight = async (browser, from, to, date, auth) => {
   cards.forEach((card, index) => {
     const airline = card.querySelector(".sSHqwe.tPgKwe.ogfYpf")?.innerText || "";
     
-    // New attempt for time extraction
     const departureFull = card.querySelector("[aria-label*='Departure time']")?.innerText
                        || card.querySelector(".mv1WYe span:nth-child(1)")?.innerText
                        || "";
@@ -170,8 +169,8 @@ const runScraper = async () => {
     const departures = ["DEL"];
     const arrivals = ["DXB"];
     //  "HKT", "DPS"
-    const dates = ["2025-06-08"];
-    // const dates = generateDates(new Date("2025-06-01"), 6);
+    // const dates = ["2025-06-08"];
+    const dates = generateDates(new Date("2025-06-01"), 6);
 
     const routes = [];
 
